@@ -37,51 +37,90 @@ async def _internal_ping(conn: 'IrcProtocol', message: 'Message'):
     conn.send("PONG {}".format(message.parameters))
 
 
-async def _internal_cap_handler(conn: 'IrcProtocol', message: 'Message'):
-    caplist = []
-    if len(message.parameters) > 2:
+async def _cap_ls(conn: 'IrcProtocol', message: 'Message'):
+    caplist = CapList.parse(message.parameters[-1])
+    is_last_line = message.parameters[2] != '*'
+
+    for cap in caplist:
+        if cap.name in conn.cap_handlers:
+            conn.server.caps[cap.name] = (cap, None)
+
+    if is_last_line:
+        for cap in conn.server.caps:
+            conn.send("CAP REQ :{}".format(cap))
+
+        if not conn.server.caps:
+            # We haven't request any CAPs, send a CAP END to end negotiation
+            conn.send("CAP END")
+
+
+def _cap_response(is_ack):
+    async def _handler(conn: 'IrcProtocol', message: 'Message'):
         caplist = CapList.parse(message.parameters[-1])
-
-    if message.parameters[1] == 'LS':
-        for cap in caplist:
-            if cap.name in conn.cap_handlers:
-                conn.server.caps[cap.name] = (cap, None)
-
-        if message.parameters[2] != '*':
-            for cap in conn.server.caps:
-                conn.send("CAP REQ :{}".format(cap))
-            if not conn.server.caps:
-                conn.send("CAP END")  # We haven't request any CAPs, send a CAP END to end negotiation
-
-    elif message.parameters[1] in ('ACK', 'NAK'):
-        enabled = message.parameters[1] == 'ACK'
         for cap in caplist:
             current = conn.server.caps[cap.name][0]
-            conn.server.caps[cap.name] = (current, enabled)
-            if enabled:
+            conn.server.caps[cap.name] = (current, is_ack)
+            if is_ack:
                 handlers = filter(None, conn.cap_handlers[cap.name])
                 await asyncio.gather(*[func(conn, cap) for func in handlers])
+
         if all(val[1] is not None for val in conn.server.caps.values()):
             conn.send("CAP END")
-    elif message.parameters[1] == 'LIST':
-        if conn.logger:
-            conn.logger.info("Current Capabilities: %s", caplist)
-    elif message.parameters[1] == 'NEW':
-        if conn.logger:
-            conn.logger.info("New capabilities advertised: %s", caplist)
-        for cap in caplist:
-            if cap.name in conn.cap_handlers:
-                conn.server.caps[cap.name] = (cap, None)
 
-        if message.parameters[2] != '*':
-            for cap in conn.server.caps:
-                conn.send("CAP REQ :{}".format(cap))
-    elif message.parameters[1] == 'DEL':
+    return _handler
+
+
+async def _cap_list(conn: 'IrcProtocol', message: 'Message'):
+    caplist = CapList.parse(message.parameters[-1])
+    if conn.logger:
+        conn.logger.info("Current Capabilities: %s", caplist)
+
+
+async def _cap_new(conn: 'IrcProtocol', message: 'Message'):
+    caplist = CapList.parse(message.parameters[-1])
+    if conn.logger:
+        conn.logger.info("New capabilities advertised: %s", caplist)
+
+    for cap in caplist:
+        if cap.name in conn.cap_handlers:
+            conn.server.caps[cap.name] = (cap, None)
+
+    if message.parameters[2] != '*':
+        for cap in conn.server.caps:
+            conn.send("CAP REQ :{}".format(cap))
+
+
+async def _cap_del(conn: 'IrcProtocol', message: 'Message'):
+    caplist = CapList.parse(message.parameters[-1])
+    if conn.logger:
+        conn.logger.info("Capabilities removed: %s", caplist)
+
+    for cap in caplist:
+        current = conn.server.caps[cap.name][0]
+        conn.server.caps[cap.name] = (current, False)
+
+
+_cap_handlers = {
+    'LS': _cap_ls,
+    'ACK': _cap_response(True),
+    'NAK': _cap_response(False),
+    'LIST': _cap_list,
+    'NEW': _cap_new,
+    'DEL': _cap_del,
+}
+
+
+async def _internal_cap_handler(conn: 'IrcProtocol', message: 'Message'):
+    subcmd = message.parameters[1]
+    try:
+        handler = _cap_handlers[subcmd]
+    except KeyError:
         if conn.logger:
-            conn.logger.info("Capabilities removed: %s", caplist)
-        for cap in caplist:
-            current = conn.server.caps[cap.name][0]
-            conn.server.caps[cap.name] = (current, False)
+            conn.logger.debug(
+                "No handler registered for CAP sub-command {!r}".format(subcmd)
+            )
+    else:
+        return await handler(conn, message)
 
 
 async def _internal_pong(conn: 'IrcProtocol', msg: 'Message'):
