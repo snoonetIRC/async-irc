@@ -1,4 +1,7 @@
 # async-irc [![Build Status](https://travis-ci.org/snoonetIRC/async-irc.svg?branch=master)](https://travis-ci.org/snoonetIRC/async-irc)
+
+**This project has moved to [TotallyNotRobots/async-irc](https://github.com/TotallyNotRobots/async-irc).**
+
 An implementation of asyncio.Protocol for IRC
 
 ## Using the library
